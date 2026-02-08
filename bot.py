@@ -1,71 +1,72 @@
 import asyncio
 import os
+import logging
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiohttp import web
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-# 1. Setup & Config
+# --- CONFIGURATION ---
 load_dotenv()
-# Securely fetch keys from Environment Variables (Render/Railway)
+logging.basicConfig(level=logging.INFO)
+
+# Fetch keys securely from Render Environment Variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-# 2. Gemini Configuration
+# Use Gemini 3 Flash (Latest for 2026)
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-3-flash') 
 chat_sessions = {}
 
-# 3. Health Check for Render & Uptime Robot
+# --- HEALTH CHECK FOR RENDER ---
 async def handle_health_check(request):
-    return web.Response(text="Bot is running smoothly!", status=200)
+    return web.Response(text="Bot is Alive!", status=200)
 
 async def start_webserver():
     app = web.Application()
     app.router.add_get("/", handle_health_check)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
+    # Render uses port 10000 or the $PORT variable
+    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+    logging.info(f"Health check server running on port {port}")
 
-# 4. Command Handlers
+# --- AI HANDLERS ---
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
-    await message.answer("✨ **Gemini Advanced AI** is now online.\nI can remember our chat and see images!")
+    await message.answer("✨ **Gemini 3 Advanced** is active.\nI support history, images, and live streaming!")
 
-# 5. Image Support Handler
+# Multimodal Image Support
 @dp.message(F.photo)
 async def handle_image(message: types.Message):
-    sent_msg = await message.reply("🤔 Thinking...")
+    sent_msg = await message.reply("🎨 Analyzing image...")
     
     photo = message.photo[-1]
     file = await bot.get_file(photo.file_id)
     photo_bytes = await bot.download_file(file.file_path)
     
     img_data = {"mime_type": "image/jpeg", "data": photo_bytes.getvalue()}
-    prompt = message.caption if message.caption else "Describe this image."
+    prompt = message.caption if message.caption else "Describe this image in detail."
     
     try:
         response = model.generate_content([prompt, img_data])
-        # FIX: Using explicit keywords to prevent ValidationErrors
+        # FIX: Named arguments to prevent Pydantic errors
         await bot.edit_message_text(
             text=response.text,
             chat_id=message.chat.id,
             message_id=sent_msg.message_id
         )
     except Exception as e:
-        await bot.edit_message_text(
-            text=f"❌ Image Error: {str(e)}",
-            chat_id=message.chat.id,
-            message_id=sent_msg.message_id
-        )
+        await bot.edit_message_text(text=f"❌ Error: {str(e)}", chat_id=message.chat.id, message_id=sent_msg.message_id)
 
-# 6. Chat Support + Streaming Handler
+# Streaming Chat Support
 @dp.message(F.text)
 async def handle_chat(message: types.Message):
     if message.chat.id not in chat_sessions:
@@ -82,29 +83,28 @@ async def handle_chat(message: types.Message):
             full_text += chunk.text
             chunk_count += 1
             
-            # Stream update every 6 chunks to avoid Telegram rate limits
-            if chunk_count % 6 == 0:
+            # Update every 8 chunks to respect Telegram rate limits
+            if chunk_count % 8 == 0:
                 await bot.edit_message_text(
-                    text=full_text + " ▌",
-                    chat_id=message.chat.id,
+                    text=full_text + " ▌", 
+                    chat_id=message.chat.id, 
                     message_id=sent_msg.message_id
                 )
         
         # Final update
         await bot.edit_message_text(
-            text=full_text,
-            chat_id=message.chat.id,
+            text=full_text, 
+            chat_id=message.chat.id, 
             message_id=sent_msg.message_id
         )
     except Exception as e:
-        await bot.edit_message_text(
-            text=f"❌ Error: {str(e)}",
-            chat_id=message.chat.id,
-            message_id=sent_msg.message_id
-        )
+        await bot.edit_message_text(text=f"❌ Error: {str(e)}", chat_id=message.chat.id, message_id=sent_msg.message_id)
 
-# 7. Main Execution
+# --- MAIN RUNNER ---
 async def main():
+    # Drop pending updates to avoid TelegramConflictError
+    await bot.delete_webhook(drop_pending_updates=True)
+    
     await asyncio.gather(
         dp.start_polling(bot),
         start_webserver()
